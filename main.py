@@ -98,81 +98,89 @@ def handle_watch(args):
         min_cpu=0.2
     )
 
-    try:
-        while True:
-            cpu = collect_cpu_metrics()
-            mem = analyze_memory()
-            procs = collect_top_processes(limit=10)
+  try:
+    while True:
+        cpu = collect_cpu_metrics()
+        mem = analyze_memory()
+        procs = collect_top_processes(limit=10)
 
-            snapshot = {
-                "cpu": cpu,
-                "mem": mem,
-            }
-            history.append(snapshot)
+        snapshot = {
+            "cpu": cpu,
+            "mem": mem,
+        }
+        history.append(snapshot)
 
-            logging.info(
-                "CPU: %s%% | MEM: %s%% (%s)",
-                cpu["cpu_percent"],
-                mem["percent_used"],
-                mem["pressure"]
-            )
+        logging.info(
+            "CPU: %s%% | MEM: %s%% (%s)",
+            cpu["cpu_percent"],
+            mem["percent_used"],
+            mem["pressure"]
+        )
 
-            #  Short-term trend detection 
-            if len(history) >= 2:
-                prev = history[-2]
-                curr = history[-1]
+        # ---- Short-term trend detection ----
+        if len(history) >= 2:
+            prev = history[-2]
+            curr = history[-1]
 
-                if curr["cpu"]["cpu_percent"] > prev["cpu"]["cpu_percent"] + 10:
-                    logging.info("Trend: CPU load increasing")
+            if curr["cpu"]["cpu_percent"] > prev["cpu"]["cpu_percent"] + 10:
+                logging.info("Trend: CPU load increasing")
 
-                if curr["mem"]["percent_used"] > prev["mem"]["percent_used"] + 5:
-                    logging.info("Trend: memory usage increasing")
+            if curr["mem"]["percent_used"] > prev["mem"]["percent_used"] + 5:
+                logging.info("Trend: memory usage increasing")
 
-                if (
-                    curr["mem"]["pressure"] == "high"
-                    and prev["mem"]["pressure"] == "high"
-                ):
-                    logging.info("Trend: sustained memory pressure")
+            if (
+                curr["mem"]["pressure"] == "high"
+                and prev["mem"]["pressure"] == "high"
+            ):
+                logging.info("Trend: sustained memory pressure")
 
-            # this part will detect Starvation 
-            tracker.update(procs)
-            starved = tracker.get_starved()
+        # ---- Starvation detection ----
+        tracker.update(procs)
+        starved = tracker.get_starved()
 
-            if starved:
-                logging.info("Starvation detected (low CPU over time):")
-                for p in starved[:5]:
-                    logging.info(
-                        " PID %s | %s | avg CPU: %.2f%%",
-                        p["pid"],
-                        p["name"],
-                        p["avg_cpu"]
-                    )
+        if starved:
+            logging.info("Starvation detected (low CPU over time):")
+            for p in starved[:5]:
+                logging.info(
+                    " PID %s | %s | avg CPU: %.2f%%",
+                    p["pid"],
+                    p["name"],
+                    p["avg_cpu"]
+                )
 
-                explanations = explain_starvation(starved, cpu)
-                if explanations:
-                    logging.info("Starvation explanation:")
-                    for line in explanations:
-                        logging.info(" - %s", line)
+            explanations = explain_starvation(starved, cpu)
+            if explanations:
+                logging.info("Starvation explanation:")
+                for line in explanations:
+                    logging.info(" - %s", line)
 
-            #  Deadlock detection block is this 
-            deadlock.update(procs)
-            suspects = deadlock.get_suspects()
+        # ---- Deadlock detection ----
+        deadlock.update(procs)
+        suspects = deadlock.get_suspects()
 
-            if suspects:
-                logging.info("Possible deadlock-like processes detected:")
-                for p in suspects[:5]:
-                    logging.info(
-                        " PID %s | %s | avg CPU: %.2f%% | mem growth: %.2f MB",
-                        p["pid"],
-                        p["name"],
-                        p["avg_cpu"],
-                        p["mem_growth_mb"]
-                    )
+        if suspects:
+            logging.info("Possible deadlock-like processes detected:")
+            for p in suspects[:5]:
+                logging.info(
+                    " PID %s | %s | avg CPU: %.2f%% | mem growth: %.2f MB",
+                    p["pid"],
+                    p["name"],
+                    p["avg_cpu"],
+                    p["mem_growth_mb"]
+                )
 
-            time.sleep(args.interval)
+        # ---- System health evaluation ----
+        status, reasons = evaluate_system_health(cpu, mem, starved, suspects)
 
-    except KeyboardInterrupt:
-        logging.info("Watch stopped by user")
+        logging.info("SYSTEM HEALTH: %s", status)
+        for r in reasons:
+            logging.info(" - %s", r)
+
+        time.sleep(args.interval)
+
+except KeyboardInterrupt:
+    logging.info("Watch stopped by user")
+
 
 
 
