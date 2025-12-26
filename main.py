@@ -12,8 +12,7 @@ from os_atlas.storage.history_writer import write_snapshot
 from os_atlas.analyzers.starvation import StarvationTracker
 from os_atlas.explainers.starvation_explainer import explain_starvation
 from os_atlas.analyzers.deadlock import DeadlockDetector
-
-
+from os_atlas.explainers.system_health import evaluate_system_health
 
 
 
@@ -23,7 +22,7 @@ def setup_logging(verbose=False):
         level=level,
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,  # forces the program to handover the mic
+        force=True,
     )
 
 
@@ -35,6 +34,43 @@ def validate_output_file(filepath):
         )
     return filepath
 
+
+def evaluate_system_health(cpu, mem, starved, suspects):
+    """
+    Evaluate overall system health based on metrics.
+    Returns: (status_string, list_of_reasons)
+    """
+    status = "normal"
+    reasons = []
+    
+    # Check CPU
+    if cpu["cpu_percent"] > 80:
+        status = "warning"
+        reasons.append(f"High CPU usage: {cpu['cpu_percent']}%")
+    
+    # Check memory
+    if mem["percent_used"] > 85:
+        status = "critical" if mem["percent_used"] > 95 else "warning"
+        reasons.append(f"High memory usage: {mem['percent_used']}%")
+    
+    if mem["pressure"] == "high":
+        status = "warning"
+        reasons.append("Memory pressure is high")
+    
+    # Check starvation
+    if starved:
+        status = "warning"
+        reasons.append(f"{len(starved)} process(es) starving")
+    
+    # Check deadlock suspects
+    if suspects:
+        status = "warning"
+        reasons.append(f"{len(suspects)} possible deadlock suspect(s)")
+    
+    if not reasons:
+        reasons.append("All metrics within normal ranges")
+    
+    return status, reasons
 
 
 def handle_snapshot(args):
@@ -68,122 +104,100 @@ def handle_snapshot(args):
     for line in explanations:
         logging.info(f" - {line}")
 
+    # Evaluate system health (FIX: define status and reasons)
+    status, reasons = evaluate_system_health(cpu, mem, [], [])
+    
+    logging.info(f"System Health: {status}")
+    for reason in reasons:
+        logging.info(f" - {reason}")
+
     snapshot = {
         "cpu": cpu,
         "memory": mem,
-        "top_processes": procs
+        "top_processes": procs,
+        "system_health": {
+            "status": status,
+            "reasons": reasons
+        }
     }
-
-    write_snapshot(snapshot)    
+    write_snapshot(snapshot)
 
     logging.info("Snapshot completed")
-
-
-
-
 
 def handle_watch(args):
     logging.info(f"Starting watch mode (interval: {args.interval}s)")
     logging.info("Press Ctrl+C to stop")
 
-    history = deque(maxlen=5)  # short-term trend window
+    history = deque(maxlen=5)
 
-    tracker = StarvationTracker(
-        window=6,
-        min_cpu=0.3
-    )
+    tracker = StarvationTracker(window=6, min_cpu=0.3)
+    deadlock = DeadlockDetector(window=6, min_cpu=0.2)
 
-    deadlock = DeadlockDetector(
-        window=6,
-        min_cpu=0.2
-    )
+    try:
+        while True:
+            cpu = collect_cpu_metrics()
+            mem = analyze_memory()
+            procs = collect_top_processes(limit=10)
 
-  try:
-    while True:
-        cpu = collect_cpu_metrics()
-        mem = analyze_memory()
-        procs = collect_top_processes(limit=10)
+            history.append({"cpu": cpu, "mem": mem})
 
-        snapshot = {
-            "cpu": cpu,
-            "mem": mem,
-        }
-        history.append(snapshot)
+            logging.info(
+                "CPU: %s%% | MEM: %s%% (%s)",
+                cpu["cpu_percent"],
+                mem["percent_used"],
+                mem["pressure"],
+            )
 
-        logging.info(
-            "CPU: %s%% | MEM: %s%% (%s)",
-            cpu["cpu_percent"],
-            mem["percent_used"],
-            mem["pressure"]
-        )
+            # ---- Short-term trends ----
+            if len(history) >= 2:
+                prev, curr = history[-2], history[-1]
 
-        # ---- Short-term trend detection ----
-        if len(history) >= 2:
-            prev = history[-2]
-            curr = history[-1]
+                if curr["cpu"]["cpu_percent"] > prev["cpu"]["cpu_percent"] + 10:
+                    logging.info("Trend: CPU load increasing")
 
-            if curr["cpu"]["cpu_percent"] > prev["cpu"]["cpu_percent"] + 10:
-                logging.info("Trend: CPU load increasing")
+                if curr["mem"]["percent_used"] > prev["mem"]["percent_used"] + 5:
+                    logging.info("Trend: memory usage increasing")
 
-            if curr["mem"]["percent_used"] > prev["mem"]["percent_used"] + 5:
-                logging.info("Trend: memory usage increasing")
+                if curr["mem"]["pressure"] == prev["mem"]["pressure"] == "high":
+                    logging.info("Trend: sustained memory pressure")
 
-            if (
-                curr["mem"]["pressure"] == "high"
-                and prev["mem"]["pressure"] == "high"
-            ):
-                logging.info("Trend: sustained memory pressure")
+            # ---- Starvation ----
+            tracker.update(procs)
+            starved = tracker.get_starved()
 
-        # ---- Starvation detection ----
-        tracker.update(procs)
-        starved = tracker.get_starved()
+            if starved:
+                logging.info("Starvation detected:")
+                for p in starved[:5]:
+                    logging.info(
+                        " PID %s | %s | avg CPU: %.2f%%",
+                        p["pid"], p["name"], p["avg_cpu"]
+                    )
 
-        if starved:
-            logging.info("Starvation detected (low CPU over time):")
-            for p in starved[:5]:
-                logging.info(
-                    " PID %s | %s | avg CPU: %.2f%%",
-                    p["pid"],
-                    p["name"],
-                    p["avg_cpu"]
-                )
-
-            explanations = explain_starvation(starved, cpu)
-            if explanations:
-                logging.info("Starvation explanation:")
-                for line in explanations:
+                for line in explain_starvation(starved, cpu):
                     logging.info(" - %s", line)
 
-        # ---- Deadlock detection ----
-        deadlock.update(procs)
-        suspects = deadlock.get_suspects()
+            # ---- Deadlock ----
+            deadlock.update(procs)
+            suspects = deadlock.get_suspects()
 
-        if suspects:
-            logging.info("Possible deadlock-like processes detected:")
-            for p in suspects[:5]:
-                logging.info(
-                    " PID %s | %s | avg CPU: %.2f%% | mem growth: %.2f MB",
-                    p["pid"],
-                    p["name"],
-                    p["avg_cpu"],
-                    p["mem_growth_mb"]
-                )
+            if suspects:
+                logging.info("Possible deadlock-like processes:")
+                for p in suspects[:5]:
+                    logging.info(
+                        " PID %s | %s | avg CPU: %.2f%% | mem growth: %.2f MB",
+                        p["pid"], p["name"], p["avg_cpu"], p["mem_growth_mb"]
+                    )
 
-        # ---- System health evaluation ----
-        status, reasons = evaluate_system_health(cpu, mem, starved, suspects)
+            # ---- System health ----
+            status, reasons = evaluate_system_health(cpu, mem, starved, suspects)
+            logging.info("SYSTEM HEALTH: %s", status)
+            for r in reasons:
+                logging.info(" - %s", r)
 
-        logging.info("SYSTEM HEALTH: %s", status)
-        for r in reasons:
-            logging.info(" - %s", r)
+            time.sleep(args.interval)
 
-        time.sleep(args.interval)
-
-except KeyboardInterrupt:
-    logging.info("Watch stopped by user")
-
-
-
-
+    except KeyboardInterrupt:
+        logging.info("Watch stopped by user")
 
 
 def handle_report(args):
@@ -244,4 +258,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+  main()
