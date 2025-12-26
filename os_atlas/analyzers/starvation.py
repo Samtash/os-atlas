@@ -1,36 +1,27 @@
-# os_atlas/analyzers/deadlock.py
 import time
 
 
-class DeadlockDetector:
-    def __init__(self, window=6, min_cpu=0.2, max_mem_growth_mb=5.0):
+class StarvationTracker:
+    def __init__(self, window=6, min_cpu=0.3):
         self.window = int(window)
         self.min_cpu = float(min_cpu)
-        self.max_mem_growth_mb = float(max_mem_growth_mb)
         self._history = {}
 
     def update(self, processes):
         now = time.time()
-
         for p in processes:
             pid = p.get("pid")
             if pid is None:
                 continue
 
             cpu = float(p.get("cpu_percent", 0.0))
-            mem = float(p.get("mem_mb", p.get("mem_mb_used", 0.0)))
-
             entry = self._history.get(pid)
             if entry is None:
-                self._history[pid] = {
-                    "name": p.get("name", ""),
-                    "samples": [(now, cpu, mem)],
-                }
+                self._history[pid] = {"name": p.get("name", ""), "samples": [(now, cpu)]}
                 continue
 
             entry["name"] = p.get("name", entry.get("name", ""))
-            entry["samples"].append((now, cpu, mem))
-
+            entry["samples"].append((now, cpu))
             if len(entry["samples"]) > self.window:
                 entry["samples"] = entry["samples"][-self.window :]
 
@@ -39,30 +30,23 @@ class DeadlockDetector:
             if pid not in live:
                 self._history.pop(pid, None)
 
-    def get_suspects(self):
-        suspects = []
-
+    def get_starved(self):
+        flagged = []
         for pid, entry in self._history.items():
             samples = entry.get("samples", [])
             if len(samples) < self.window:
                 continue
 
-            avg_cpu = sum(cpu for _, cpu, _ in samples) / len(samples)
-
-            mem_start = samples[0][2]
-            mem_end = samples[-1][2]
-            mem_growth = mem_end - mem_start
-
-            if avg_cpu <= self.min_cpu and mem_growth <= self.max_mem_growth_mb:
-                suspects.append(
+            avg_cpu = sum(v for _, v in samples) / len(samples)
+            if avg_cpu < self.min_cpu:
+                flagged.append(
                     {
                         "pid": pid,
                         "name": entry.get("name", ""),
                         "avg_cpu": round(avg_cpu, 2),
-                        "mem_growth_mb": round(mem_growth, 2),
                         "window": len(samples),
                     }
                 )
 
-        suspects.sort(key=lambda x: (x["avg_cpu"], x["mem_growth_mb"]))
-        return suspects
+        flagged.sort(key=lambda x: x["avg_cpu"])
+        return flagged

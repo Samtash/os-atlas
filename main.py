@@ -8,6 +8,11 @@ from os_atlas.explainers.snapshot_explainer import explain_snapshot
 from os_atlas.collectors.process import collect_top_processes
 import time
 from collections import deque
+from os_atlas.storage.history_writer import write_snapshot
+from os_atlas.analyzers.starvation import StarvationTracker
+from os_atlas.explainers.starvation_explainer import explain_starvation
+from os_atlas.analyzers.deadlock import DeadlockDetector
+
 
 
 
@@ -63,6 +68,14 @@ def handle_snapshot(args):
     for line in explanations:
         logging.info(f" - {line}")
 
+    snapshot = {
+        "cpu": cpu,
+        "memory": mem,
+        "top_processes": procs
+    }
+
+    write_snapshot(snapshot)    
+
     logging.info("Snapshot completed")
 
 
@@ -73,13 +86,23 @@ def handle_watch(args):
     logging.info(f"Starting watch mode (interval: {args.interval}s)")
     logging.info("Press Ctrl+C to stop")
 
-    history = deque(maxlen=5)  # keep last 5 snapshots
+    history = deque(maxlen=5)  # short-term trend window
+
+    tracker = StarvationTracker(
+        window=6,
+        min_cpu=0.3
+    )
+
+    deadlock = DeadlockDetector(
+        window=6,
+        min_cpu=0.2
+    )
 
     try:
         while True:
             cpu = collect_cpu_metrics()
             mem = analyze_memory()
-            procs = collect_top_processes()
+            procs = collect_top_processes(limit=10)
 
             snapshot = {
                 "cpu": cpu,
@@ -87,11 +110,14 @@ def handle_watch(args):
             }
             history.append(snapshot)
 
-            logging.info("CPU: %s%% | MEM: %s%% (%s)",
-                         cpu["cpu_percent"],
-                         mem["percent_used"],
-                         mem["pressure"])
+            logging.info(
+                "CPU: %s%% | MEM: %s%% (%s)",
+                cpu["cpu_percent"],
+                mem["percent_used"],
+                mem["pressure"]
+            )
 
+            #  Short-term trend detection 
             if len(history) >= 2:
                 prev = history[-2]
                 curr = history[-1]
@@ -102,13 +128,54 @@ def handle_watch(args):
                 if curr["mem"]["percent_used"] > prev["mem"]["percent_used"] + 5:
                     logging.info("Trend: memory usage increasing")
 
-                if curr["mem"]["pressure"] == "high" and prev["mem"]["pressure"] == "high":
+                if (
+                    curr["mem"]["pressure"] == "high"
+                    and prev["mem"]["pressure"] == "high"
+                ):
                     logging.info("Trend: sustained memory pressure")
+
+            # this part will detect Starvation 
+            tracker.update(procs)
+            starved = tracker.get_starved()
+
+            if starved:
+                logging.info("Starvation detected (low CPU over time):")
+                for p in starved[:5]:
+                    logging.info(
+                        " PID %s | %s | avg CPU: %.2f%%",
+                        p["pid"],
+                        p["name"],
+                        p["avg_cpu"]
+                    )
+
+                explanations = explain_starvation(starved, cpu)
+                if explanations:
+                    logging.info("Starvation explanation:")
+                    for line in explanations:
+                        logging.info(" - %s", line)
+
+            #  Deadlock detection block is this 
+            deadlock.update(procs)
+            suspects = deadlock.get_suspects()
+
+            if suspects:
+                logging.info("Possible deadlock-like processes detected:")
+                for p in suspects[:5]:
+                    logging.info(
+                        " PID %s | %s | avg CPU: %.2f%% | mem growth: %.2f MB",
+                        p["pid"],
+                        p["name"],
+                        p["avg_cpu"],
+                        p["mem_growth_mb"]
+                    )
 
             time.sleep(args.interval)
 
     except KeyboardInterrupt:
         logging.info("Watch stopped by user")
+
+
+
 
 
 def handle_report(args):
