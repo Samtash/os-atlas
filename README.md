@@ -118,3 +118,10 @@ os_atlas/
 ├── cli/               # Command-line interface handlers
 ├── dashboard.py             # GUI entry point
 └── main.py            # CLI entry point
+
+
+## GitHub Repository
+https://github.com/Samtash/os-atlas
+
+## Demo Video
+https://drive.google.com/file/d/12AaLKK5IFqgCs2yPFA5hTG6WTXij94XN/view?usp=sharing
