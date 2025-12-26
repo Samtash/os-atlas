@@ -94,7 +94,7 @@ The project applies each skill as follows:
 **Used to:** Provide live monitoring and interval-based analysis via the command line.
 
 ### Building a GUI
-**Where:** `app.py`  
+**Where:** `dashboard.py`  
 **Used to:** Make system behavior accessible visually while preserving underlying reasoning.
 
 ### Translating Metrics into Meaningful Insights
@@ -116,5 +116,5 @@ os_atlas/
 ├── explainers/        # Human-readable explanations of system behavior
 ├── storage/           # Snapshot persistence
 ├── cli/               # Command-line interface handlers
-├── app.py             # GUI entry point
+├── dashboard.py             # GUI entry point
 └── main.py            # CLI entry point
