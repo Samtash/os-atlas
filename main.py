@@ -3,6 +3,12 @@ import sys
 import logging
 from pathlib import Path
 from os_atlas.collectors.metrics import collect_cpu_metrics
+from os_atlas.analyzers.memory import analyze_memory
+from os_atlas.explainers.snapshot_explainer import explain_snapshot
+from os_atlas.collectors.process import collect_top_processes
+import time
+from collections import deque
+
 
 
 
@@ -12,7 +18,7 @@ def setup_logging(verbose=False):
         level=level,
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,  # <-- this is the fix
+        force=True,  # forces the program to handover the mic
     )
 
 
@@ -25,25 +31,84 @@ def validate_output_file(filepath):
     return filepath
 
 
+
 def handle_snapshot(args):
-    logging.info("Taking system snapshot...")
+    logging.info("Taking system snapshot in REAL time")
 
     cpu = collect_cpu_metrics()
+    mem = analyze_memory()
+    procs = collect_top_processes()
 
     logging.info("CPU Metrics:")
-    logging.info(f"  Usage: {cpu['cpu_percent']}%")
-    logging.info(f"  Logical cores: {cpu['logical_cores']}")
-    logging.info(f"  Physical cores: {cpu['physical_cores']}")
-    logging.info(f"  Frequency: {cpu['frequency_mhz']} MHz")
+    logging.info(f" Usage: {cpu['cpu_percent']}%")
+    logging.info(f" Logical cores: {cpu['logical_cores']}")
+    logging.info(f" Physical cores: {cpu['physical_cores']}")
+    logging.info(f" Frequency: {cpu['frequency_mhz']} MHz")
+
+    logging.info("Memory Metrics:")
+    logging.info(f" Used: {mem['used_mb']} MB / {mem['total_mb']} MB")
+    logging.info(f" Available: {mem['available_mb']} MB")
+    logging.info(f" Usage: {mem['percent_used']}%")
+    logging.info(f" Pressure level: {mem['pressure']}")
+
+    logging.info("Top Processes (by CPU usage):")
+    for p in procs:
+        logging.info(
+            f" PID {p['pid']} | {p['name']} | CPU: {p['cpu_percent']}% | MEM: {p['memory_mb']} MB"
+        )
+
+    explanations = explain_snapshot(cpu, mem, procs)
+
+    logging.info("System Interpretation:")
+    for line in explanations:
+        logging.info(f" - {line}")
 
     logging.info("Snapshot completed")
+
+
 
 
 
 def handle_watch(args):
     logging.info(f"Starting watch mode (interval: {args.interval}s)")
     logging.info("Press Ctrl+C to stop")
-    logging.info("Watch mode active (implementation pending)")
+
+    history = deque(maxlen=5)  # keep last 5 snapshots
+
+    try:
+        while True:
+            cpu = collect_cpu_metrics()
+            mem = analyze_memory()
+            procs = collect_top_processes()
+
+            snapshot = {
+                "cpu": cpu,
+                "mem": mem,
+            }
+            history.append(snapshot)
+
+            logging.info("CPU: %s%% | MEM: %s%% (%s)",
+                         cpu["cpu_percent"],
+                         mem["percent_used"],
+                         mem["pressure"])
+
+            if len(history) >= 2:
+                prev = history[-2]
+                curr = history[-1]
+
+                if curr["cpu"]["cpu_percent"] > prev["cpu"]["cpu_percent"] + 10:
+                    logging.info("Trend: CPU load increasing")
+
+                if curr["mem"]["percent_used"] > prev["mem"]["percent_used"] + 5:
+                    logging.info("Trend: memory usage increasing")
+
+                if curr["mem"]["pressure"] == "high" and prev["mem"]["pressure"] == "high":
+                    logging.info("Trend: sustained memory pressure")
+
+            time.sleep(args.interval)
+
+    except KeyboardInterrupt:
+        logging.info("Watch stopped by user")
 
 
 def handle_report(args):
