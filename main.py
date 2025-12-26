@@ -194,12 +194,23 @@ def handle_watch(args):
             for r in reasons:
                 logging.info(" - %s", r)
 
+            # ---- Write snapshot ----
+            snapshot = {
+                "timestamp": time.time(),
+                "cpu": cpu,
+                "memory": mem,
+                "processes": procs,
+                "health": {
+                    "status": status,
+                    "reasons": reasons
+                }
+            }
+            write_snapshot(snapshot)
+
             time.sleep(args.interval)
 
     except KeyboardInterrupt:
         logging.info("Watch stopped by user")
-
-
 def handle_report(args):
     logging.info(f"Generating system report: {args.out}")
     logging.info("Report completed (implementation pending)")
